@@ -1,0 +1,16 @@
+# Secrets — NEVER commit these
+bot.env
+
+# Runtime state and hand-edited data
+state.json
+facts.txt
+
+# Build artifacts
+build/
+tgbot
+
+# Editor / OS cruft
+*.o
+*.swp
+*~
+.DS_Store

@@ -11,6 +11,10 @@ struct Config {
     std::set<long long> allowed_users;
     bool allow_everyone = false;
     std::set<long long> admin_users;
+    std::set<long long> trusted_chats;   // groups trusted without checking (TRUSTED_CHAT_IDS)
+    bool allow_group_members = true;     // auto-allow people who talk in trusted groups
+    bool leave_untrusted_groups = true;  // leave groups no admin is in
+    std::set<std::string> public_commands;
     int rate_limit_per_min = 8;      // per user, 0 = off; admins are exempt
     int max_queue = 20;
 
@@ -38,14 +42,22 @@ struct Config {
     int search_results = 5;
     size_t fetch_max_chars = 8000;
     std::string weather_units = "metric";
-    size_t memory_max = 50;
+    std::string facts_file = "facts.txt";
+    size_t facts_context_chars = 3000;  // how much of facts.txt goes into each prompt
     bool show_tool_footer = true;
 
     std::string state_file = "state.json";
 
+    // /rebase and /restart
+    std::string git_repo_dir;            // empty = folder containing the tgbot binary
+    std::string git_remote = "origin";
+    std::string git_branch = "main";
+    std::string build_command = "make";
+
     void load();
     bool is_admin(long long user_id) const { return admin_users.count(user_id) > 0; }
     bool tool_enabled(const std::string& name) const { return tools.count(name) > 0; }
+    bool is_public_command(const std::string& cmd) const { return public_commands.count(cmd) > 0; }
 
 private:
     std::map<std::string, std::string> file_vals_;

@@ -8,7 +8,7 @@
 #include "util.hpp"
 
 const char* const ALL_TOOLS[] = {"web_search", "fetch_url", "wikipedia", "weather", "calculator",
-                                 "roll_dice", "random", "get_datetime", "remember", "forget", nullptr};
+                                 "roll_dice", "random", "get_datetime", "look_up_facts", nullptr};
 
 static std::set<long long> parse_ids(const std::string& s, bool* star) {
     std::set<long long> out;
@@ -33,6 +33,18 @@ void Config::load() {
     while (!telegram_api.empty() && telegram_api.back() == '/') telegram_api.pop_back();
     allowed_users = parse_ids(get("ALLOWED_USER_IDS"), &allow_everyone);
     admin_users = parse_ids(get("ADMIN_USER_IDS"), nullptr);
+    trusted_chats = parse_ids(get("TRUSTED_CHAT_IDS"), nullptr);
+    allow_group_members = get_bool("ALLOW_GROUP_MEMBERS", true);
+    leave_untrusted_groups = get_bool("LEAVE_UNTRUSTED_GROUPS", true);
+    {
+        public_commands.clear();
+        std::stringstream ss(lower(get("PUBLIC_COMMANDS", "help,start,retry,stop,stats,id,tools")));
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            item = trim(item);
+            if (!item.empty()) public_commands.insert(item[0] == '/' ? item : "/" + item);
+        }
+    }
     rate_limit_per_min = std::stoi(get("RATE_LIMIT_PER_MIN", "8"));
     max_queue = std::stoi(get("MAX_QUEUE", "20"));
 
@@ -62,6 +74,10 @@ void Config::load() {
         std::string item;
         while (std::getline(ss, item, ',')) {
             item = trim(item);
+            if (item == "remember" || item == "forget") {
+                log("Note: the remember/forget tools were replaced by facts.txt; ignoring '" + item + "' in TOOLS");
+                continue;
+            }
             bool known = false;
             for (int i = 0; ALL_TOOLS[i]; ++i) known |= item == ALL_TOOLS[i];
             if (!known) throw std::runtime_error("Unknown tool in TOOLS: '" + item + "'");
@@ -75,10 +91,14 @@ void Config::load() {
     search_results = std::stoi(get("SEARCH_RESULTS", "5"));
     fetch_max_chars = std::stoul(get("FETCH_MAX_CHARS", "8000"));
     weather_units = lower(get("WEATHER_UNITS", "metric"));
-    memory_max = std::stoul(get("MEMORY_MAX", "50"));
-    if (memory_max == 0) { tools.erase("remember"); tools.erase("forget"); }
+    facts_file = get("FACTS_FILE", "facts.txt");
+    facts_context_chars = std::stoul(get("FACTS_CONTEXT_CHARS", "3000"));
     show_tool_footer = get_bool("SHOW_TOOL_FOOTER", true);
     state_file = get("STATE_FILE", "state.json");
+    git_repo_dir = get("GIT_REPO_DIR");
+    git_remote = get("GIT_REMOTE", "origin");
+    git_branch = get("GIT_BRANCH", "main");
+    build_command = get("BUILD_COMMAND", "make");
 }
 
 void Config::load_file(const std::string& path) {

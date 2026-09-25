@@ -1,7 +1,9 @@
 // Offline self-tests: `make test`. Needs no network (URL checks use literal IPs / localhost).
+#include <cstdio>
 #include <iostream>
 #include <string>
 
+#include "facts.hpp"
 #include "markdown.hpp"
 #include "tools.hpp"
 #include "util.hpp"
@@ -119,6 +121,48 @@ int main() {
     bool valid = true;
     for (const auto& p : split_for_telegram(emoji, 3501)) valid &= p.size() % 4 == 0;
     check(valid, "never splits inside a UTF-8 character");
+
+    std::cout << "facts.txt\n";
+    {
+        std::string fp = "/tmp/tgbot_selftest_facts.txt";
+        std::remove(fp.c_str());
+        Facts facts(fp);
+        facts.create_if_missing();
+        std::string err;
+        check(facts.add("global", 0, "", "The owner is Kaiser.", err), "add global fact");
+        check(facts.add("user", 777, "Ryan", "loves tacos", err), "add user fact");
+        check(facts.add("user", 777, "Ryan", "afraid of geese", err), "second fact, same user");
+        check(facts.add("chat", -100, "Movie Club", "Friday is movie night", err), "add chat fact");
+        check(facts.count() == 4, "four facts total");
+
+        auto ryan = facts.section("user", 777);
+        check(ryan.size() == 2, "user 777 has two facts");
+
+        // Context for chat -100 with Ryan present: gets global + chat + Ryan's facts.
+        std::string ctx = facts.context(-100, {{777, "Ryan"}}, 3000);
+        check(ctx.find("Kaiser") != std::string::npos, "context has global");
+        check(ctx.find("movie night") != std::string::npos, "context has chat fact");
+        check(ctx.find("tacos") != std::string::npos, "context has present user's fact");
+
+        // A user not in the room shouldn't leak into context.
+        std::string ctx2 = facts.context(-100, {}, 3000);
+        check(ctx2.find("tacos") == std::string::npos, "absent user's facts stay out of context");
+
+        // lookup finds by keyword regardless of who's present.
+        json hits = facts.lookup("geese");
+        check(hits["total_matches"] == 1 && !hits["results"].empty() &&
+                  hits["results"][0].value("fact", "").find("geese") != std::string::npos,
+              "lookup by keyword");
+
+        // Remove the first Ryan fact; the other remains, comments/layout preserved.
+        check(facts.remove(ryan[0]), "remove a fact");
+        check(facts.section("user", 777).size() == 1, "one fact left after removal");
+
+        // A fresh Facts over the same file sees the persisted state (reload on mtime).
+        Facts reopened(fp);
+        check(reopened.count() == 3, "reopened file has three facts");
+        std::remove(fp.c_str());
+    }
 
     std::cout << (failures ? "\n" + std::to_string(failures) + " FAILED\n" : "\nall tests passed\n");
     return failures ? 1 : 0;

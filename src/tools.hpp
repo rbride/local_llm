@@ -6,7 +6,7 @@
 #include <string>
 
 #include "config.hpp"
-#include "store.hpp"
+#include "facts.hpp"
 
 using json = nlohmann::json;
 
@@ -21,7 +21,7 @@ struct ToolContext {
 
 class Tools {
 public:
-    Tools(const Config& cfg, Store& store) : cfg_(cfg), store_(store) {}
+    Tools(const Config& cfg, Facts& facts) : cfg_(cfg), facts_(facts) {}
 
     json definitions() const;  // OpenAI-format tool list (enabled tools only)
     std::string run(const std::string& name, const std::string& arguments, const ToolContext& ctx) const;
@@ -35,7 +35,7 @@ public:
 
 private:
     const Config& cfg_;
-    Store& store_;
+    Facts& facts_;
 
     std::string web_search(const json& a) const;
     std::string fetch_url(const json& a) const;
@@ -43,6 +43,5 @@ private:
     std::string weather(const json& a) const;
     std::string random(const json& a) const;
     std::string datetime() const;
-    std::string remember(const json& a, const ToolContext& ctx) const;
-    std::string forget(const json& a, const ToolContext& ctx) const;
+    std::string look_up_facts(const json& a) const;
 };

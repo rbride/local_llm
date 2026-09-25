@@ -359,12 +359,12 @@ json Tools::definitions() const {
          {"max", {{"type", "integer"}}}},
         json::array()));
     add("get_datetime", fn("get_datetime", "Get the current date, time and weekday.", json::object(), json::array()));
-    add("remember", fn("remember",
-        "Save a short fact about this chat or its people for later conversations (e.g. 'Ryan is allergic to cats'). "
-        "Only save things people clearly want remembered.",
-        {{"fact", {{"type", "string"}}}}, {"fact"}));
-    add("forget", fn("forget", "Delete a saved note by its number from the notes list.",
-        {{"number", {{"type", "integer"}}}}, {"number"}));
+    add("look_up_facts", fn("look_up_facts",
+        "Search the owner's saved notes about people, chats and anything else (facts.txt). Search by a person's name, "
+        "@username, user id, or a keyword. Notes about the people currently talking are usually already in your "
+        "instructions; use this for anyone or anything else.",
+        {{"query", {{"type", "string"}, {"description", "name, @username, id or keyword; empty lists everything"}}}},
+        json::array()));
     return all;
 }
 
@@ -379,12 +379,12 @@ std::string Tools::status_line(const std::string& name, const std::string& argum
     if (name == "roll_dice") return "\xF0\x9F\x8E\xB2 Rolling " + q("notation");                 // 🎲
     if (name == "random") return "\xF0\x9F\x8E\xB0 Picking at random";                           // 🎰
     if (name == "get_datetime") return "\xF0\x9F\x95\x92 Checking the time";                     // 🕒
-    if (name == "remember") return "\xF0\x9F\x93\x9D Remembering: " + q("fact");                 // 📝
-    if (name == "forget") return "\xF0\x9F\xA7\xB9 Forgetting note #" + q("number");             // 🧹
+    if (name == "look_up_facts") return "\xF0\x9F\x93\x92 Checking notes: " + q("query");        // 📒
     return "\xF0\x9F\x94\xA7 " + name;                                                            // 🔧
 }
 
 std::string Tools::run(const std::string& name, const std::string& arguments, const ToolContext& ctx) const {
+    (void)ctx;  // available to tools that need to know who's asking
     if (!cfg_.tool_enabled(name)) return err("unknown or disabled tool: " + name).dump();
     json a = json::parse(arguments.empty() ? "{}" : arguments, nullptr, false);
     if (a.is_discarded() || !a.is_object()) return err("arguments must be a JSON object").dump();
@@ -397,8 +397,7 @@ std::string Tools::run(const std::string& name, const std::string& arguments, co
         if (name == "roll_dice") return roll(arg_str(a, "notation"));
         if (name == "random") return random(a);
         if (name == "get_datetime") return datetime();
-        if (name == "remember") return remember(a, ctx);
-        if (name == "forget") return forget(a, ctx);
+        if (name == "look_up_facts") return look_up_facts(a);
     } catch (const std::exception& e) {
         return err(e.what()).dump();
     }
@@ -711,26 +710,6 @@ std::string Tools::datetime() const {
         .dump();
 }
 
-std::string Tools::remember(const json& a, const ToolContext& ctx) const {
-    std::string fact = utf8_head(sanitize_untrusted(arg_str(a, "fact")), 300);
-    if (fact.empty()) return err("missing fact").dump();
-    std::lock_guard<std::mutex> lock(store_.mu);
-    auto& mems = store_.chats[ctx.chat_id].memories;
-    if (mems.size() >= cfg_.memory_max) return err("notes are full (" + std::to_string(cfg_.memory_max) + "); forget one first").dump();
-    for (const auto& m : mems) if (lower(m.text) == lower(fact)) return json{{"ok", true}, {"note", "already saved"}}.dump();
-    mems.push_back({fact, ctx.user_name, format_time(std::time(nullptr), false, "%Y-%m-%d")});
-    store_.save();
-    return json{{"ok", true}, {"saved_as_number", mems.size()}}.dump();
-}
-
-std::string Tools::forget(const json& a, const ToolContext& ctx) const {
-    if (!a.contains("number") || !a["number"].is_number_integer()) return err("missing note number").dump();
-    int n = a["number"].get<int>();
-    std::lock_guard<std::mutex> lock(store_.mu);
-    auto& mems = store_.chats[ctx.chat_id].memories;
-    if (n < 1 || n > static_cast<int>(mems.size())) return err("no note #" + std::to_string(n)).dump();
-    std::string removed = mems[n - 1].text;
-    mems.erase(mems.begin() + (n - 1));
-    store_.save();
-    return json{{"ok", true}, {"removed", removed}}.dump();
+std::string Tools::look_up_facts(const json& a) const {
+    return facts_.lookup(arg_str(a, "query")).dump(-1, ' ', false, json::error_handler_t::replace);
 }
