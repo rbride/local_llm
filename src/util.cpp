@@ -1,7 +1,10 @@
 #include "util.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <set>
@@ -23,10 +26,26 @@ bool starts_with(const std::string& s, const std::string& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
 
+namespace {
+std::mutex log_mu;
+std::ofstream log_out;
+}  // namespace
+
+void set_log_file(const std::string& path) {
+    std::lock_guard<std::mutex> lock(log_mu);
+    if (log_out.is_open()) log_out.close();
+    if (path.empty()) return;
+    log_out.open(path, std::ios::app);
+    if (!log_out) std::cerr << "Couldn't open log file " << path << ": " << std::strerror(errno) << std::endl;
+}
+
+// std::endl flushes after every line, so both sinks are effectively line-buffered.
 void log(const std::string& msg) {
-    static std::mutex mu;
-    std::lock_guard<std::mutex> lock(mu);
-    std::cout << "[" << format_time(std::time(nullptr), false, "%H:%M:%S") << "] " << msg << std::endl;
+    std::lock_guard<std::mutex> lock(log_mu);
+    std::time_t now = std::time(nullptr);
+    std::cout << "[" << format_time(now, false, "%H:%M:%S") << "] " << msg << std::endl;
+    if (log_out.is_open())
+        log_out << "[" << format_time(now, false, "%Y-%m-%d %H:%M:%S") << "] " << msg << std::endl;
 }
 
 long long now_ms() {
@@ -45,13 +64,13 @@ std::string format_time(std::time_t t, bool utc, const char* fmt) {
 
 std::string strip_think(std::string s) {
     for (;;) {
-        auto a = s.find("<think>");
+        auto a = s.find("\074think\076");
         if (a == std::string::npos) break;
-        auto b = s.find("</think>", a);
+        auto b = s.find("\074/think\076", a);
         if (b == std::string::npos) { s.erase(a); break; }
         s.erase(a, b + 8 - a);
     }
-    auto b = s.find("</think>");
+    auto b = s.find("\074/think\076");
     if (b != std::string::npos) s.erase(0, b + 8);
     return trim(s);
 }
@@ -70,6 +89,17 @@ std::string utf8_tail(const std::string& s, size_t max_bytes) {
     size_t start = s.size() - max_bytes;
     while (start < s.size() && is_continuation(static_cast<unsigned char>(s[start]))) ++start;
     return s.substr(start);
+}
+
+std::string head_at_boundary(const std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) return s;
+    std::string cut = utf8_head(s, max_bytes);
+    size_t floor = max_bytes / 2;  // don't trim more than half looking for a boundary
+    size_t p = cut.find_last_of(".!?\n");
+    if (p != std::string::npos && p >= floor) return cut.substr(0, p + 1);
+    p = cut.find_last_of(" \t");
+    if (p != std::string::npos && p >= floor) return cut.substr(0, p);
+    return cut;
 }
 
 std::vector<std::string> split_for_telegram(const std::string& text, size_t limit) {
@@ -106,8 +136,8 @@ std::string sanitize_untrusted(std::string s) {
             else pos += pair.first.size();
         }
     }
-    static const char* literal[] = {"<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>",
-                                    "<think>", "</think>", "[INST]", "[/INST]", "<<SYS>>", "<</SYS>>",
+    static const char* literal[] = {"\074tool_call\076", "\074/tool_call\076", "<tool_response>", "</tool_response>",
+                                    "\074think\076", "\074/think\076", "[INST]", "[/INST]", "<<SYS>>", "<</SYS>>",
                                     "<s>", "</s>", "<start_of_turn>", "<end_of_turn>", "[TOOL_CALLS]",
                                     "[AVAILABLE_TOOLS]", "[/AVAILABLE_TOOLS]", "[TOOL_RESULTS]", "[/TOOL_RESULTS]"};
     bool changed = true;

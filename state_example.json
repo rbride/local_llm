@@ -1,0 +1,19 @@
+{
+  "allowed": 
+  },
+  "chats": {
+    "-1003932332088": {
+      "max_history": -1,
+      "max_tokens": -1,
+      "persona": "all replies should target 250 tokens if it is more have good reason and be able to explain yourself if someone would ask. Do not print your reason for doing so however no one fucking cares enough to read it every message",
+      "persona_reminder": 1,
+      "temperature": -1.0,
+      "think_budget": -1,
+      "thinking": 1
+    }
+  },
+  "denied": [],
+  "trusted_groups": {
+  },
+  "update_offset": 
+}

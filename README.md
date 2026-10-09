@@ -12,6 +12,13 @@ make test      # offline self-tests, optional
 
 (`nlohmann/json.hpp` is vendored under `third_party/`, so the `nlohmann-json3-dev` package is optional. `git` is only needed if you want `/rebase`.)
 
+To see per-file line coverage from the self-tests, install [gcovr](https://gcovr.com/) and run `make coverage`. It rebuilds the library objects and tests with `-O0 -g --coverage` into a separate `build-cov/` directory (the normal `build/` is untouched), runs the tests, and prints a coverage table.
+
+```
+sudo apt install gcovr
+make coverage
+```
+
 ## Run
 
 1. Start llama-server with `--jinja`, which tool calling needs:
@@ -51,16 +58,50 @@ Admin only:
 | Command | What it does |
 |---|---|
 | `/reset` | Forget this conversation. Facts and persona are kept. |
+| `/forget` | Also drop this chat's notes, persona and remembered names. |
 | `/persona <text>` | Set the bot's personality for this chat. `/persona reset` undoes it. |
+| `/persona reminder <n>` | Repeat the persona next to every Nth message here (0 = off, 1 = every, up to 50). `/persona reminder default` follows `bot.env` again. |
 | `/think on\|off` | Toggle the thinking step for this chat. |
+| `/think budget <n>` | Thinking cap for this chat in tokens (0 = no cap; `/think budget` shows it). |
+| `/context <n>` | How many past messages this chat keeps (2-500). Not the model's token context window. |
+| `/temp <x>` | Sampling temperature for this chat (0-2). |
+| `/maxtokens <n>` | Cap on the answer length for this chat (64-16000). Thinking is capped separately with `/think budget`. |
+| `/limits` | All effective limits for this chat: history, temperature, answer cap, think budget, thinking. |
+| `/model` | Show the current model and the switchable ones; `/model <name>` switches (takes effect when the model server reloads). |
+| `/defaults` | Forget this chat's setting overrides (see *Settings layers* below). |
 | `/allow`, `/deny` | Grant or revoke access. Reply to someone's message, or pass `@username` or a numeric id. |
 | `/trust`, `/untrust` | Trust or untrust the current group. |
 | `/users` | Show who's allowed and which groups are trusted. |
-| `/facts` | Show the notes for this chat and its id. |
-| `/fact <text>` | Add a note. In a group it's a chat note; in private it's about you. `/fact @user <text>` targets a person; `/fact global <text>` is for every chat. |
-| `/unfact <n>` | Delete note number `n` from this chat (see `/facts`). |
+| `/facts [global/@user]` | Show notes for this chat, global notes, or a person. |
+| `/fact <text>` | Add a note. In a group it's a chat note; `/fact @user <text>` targets a person (scoped to the current chat unless an owner uses `everywhere`); `/fact me <text>` is about you; `/fact global <text>` is for every chat (owner-only). |
+| `/unfact [global/@user] <n>` | Delete note number `n` from this chat, global notes (owner-only), or a person. |
+| `/alias <name1>, <name2>` | Add nicknames for someone. Reply to their message, or use `/alias @user name1, name2`. |
+| `/unalias <name>` | Remove a nickname (owner-protected aliases need the owner). |
+| `/aliases [@user]` | List nicknames. |
 | `/rebase` | `git fetch` + rebase, rebuild, then restart. |
 | `/restart` | Restart the bot. |
+
+### Settings layers
+
+Per-chat settings resolve in three layers, highest first: **this chat's override** → the **global default** → the value in `bot.env`. Run any setting command (`/persona`, `/think`, `/context`, `/temp`, `/maxtokens`) with no argument to see the value in effect and all three layers. An **owner** can set the global layer with a `global` form of the same command — `/persona global <text>`, `/think global …`, `/context global <n>`, `/temp global <x>`, `/maxtokens global <n>` — which covers every chat that has no override of its own.
+
+| Reset command | What it clears |
+|---|---|
+| `/defaults` | This chat's overrides. |
+| `/defaults global` (owner) | The global overrides. |
+| `/defaults all CONFIRM` (owner) | The global overrides and every chat's overrides. |
+
+None of them touch facts, aliases, the allow list, trusted groups or conversation history.
+
+### Owner only
+
+An owner is always also an admin and has this command plus the `global` forms above.
+
+| Command | What it does |
+|---|---|
+| `/wipefacts CONFIRM` | Delete every note in `facts.txt` — global, per-person and per-chat, including owner-protected ones. The file is rewritten to the empty template. |
+
+Owner-protected facts and aliases can't be removed by a regular admin.
 
 Which commands are public is configurable with `PUBLIC_COMMANDS`. In groups, @mention the bot or reply to one of its messages.
 
@@ -113,9 +154,13 @@ Search works out of the box through DuckDuckGo, but DuckDuckGo may start blockin
 - **The chat tools can't touch your PC.** No tool the model can call reads or writes your files or runs commands. `/rebase` and `/restart` do run commands, but only an admin can trigger them, never the model.
 - **`fetch_url` only reaches the public internet.** It resolves the address, refuses localhost, LAN and link-local addresses, and pins the checked IP so a later DNS lookup can't be swapped for a private one. It checks every redirect the same way, so nobody can make the bot poke your router or your llama-server.
 - **`/rebase`'s git and build commands run without a shell** (no `sh -c`), in their own process group, with a timeout, and with git's interactive prompts disabled — a hung fetch can't wedge the bot.
-- **Faked conversation turns are stripped.** Chat-template control tokens like `<|im_start|>`, `<|eot_id|>` and `<tool_call>` are removed from messages, names, facts and web content.
+- **Faked conversation turns are stripped.** Chat-template control tokens like `<|im_start|>`, `<|eot_id|>` and tool-call tags are removed from messages, names, facts and web content.
 - **Everything is capped:** tool rounds per message, the size of each tool result, facts injected per prompt, and messages per user per minute.
 - **Web content and facts are labelled untrusted.** The model is told they're data, not instructions. That makes hijacking harder, not impossible.
+
+## Logging
+
+The bot logs the interesting events (commands, access grants/denials, model requests with token counts and tok/s, tool calls, restarts, errors) to the console and appends them to a log file. `LOG_FILE` sets the path, default `tgbot.log`; set it empty for console only. Console lines carry the time of day, file lines the full date. Rotation isn't built in: point `logrotate` at the file with `copytruncate`, or just truncate it (`: > tgbot.log`) — the bot opens the file in append mode and flushes every line, so nothing gets lost or overwritten.
 
 ## Files
 

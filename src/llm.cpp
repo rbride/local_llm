@@ -10,9 +10,16 @@
 namespace {
 // What the user should see while content is still streaming in.
 std::string visible_part(const std::string& raw) {
-    auto open = raw.find("<think>");
-    if (open != std::string::npos && raw.find("</think>", open) == std::string::npos) return trim(raw.substr(0, open));
+    auto open = raw.find("\074think\076");
+    if (open != std::string::npos && raw.find("\074/think\076", open) == std::string::npos) return trim(raw.substr(0, open));
     return strip_think(raw);
+}
+
+// True while raw currently ends inside an unclosed inline thinking section: those content
+// deltas count toward the thinking budget (Task H), not the answer cap.
+bool in_think_section(const std::string& raw) {
+    auto open = raw.find("\074think\076");
+    return open != std::string::npos && raw.find("\074/think\076", open) == std::string::npos;
 }
 
 std::string random_id() {
@@ -25,15 +32,19 @@ std::string random_id() {
 }  // namespace
 
 LlmResult llm_chat(const Config& cfg, const json& messages, const json& tools, bool thinking, int max_tokens,
-                   const StreamHooks& hooks) {
+                   const Sampling& sampling, const StreamHooks& hooks) {
     json payload = {
         {"model", cfg.llm_model},
         {"messages", messages},
-        {"temperature", cfg.temperature},
+        {"temperature", sampling.temperature},
         {"max_tokens", max_tokens},
         {"stream", true},
         {"stream_options", {{"include_usage", true}}},
     };
+    // Task EG2: send top_p / presence_penalty only when the matching mode-specific
+    // setting is configured; otherwise leave them out so the server default applies.
+    if (sampling.top_p) payload["top_p"] = *sampling.top_p;
+    if (sampling.presence_penalty) payload["presence_penalty"] = *sampling.presence_penalty;
     if (tools.is_array() && !tools.empty()) {
         payload["tools"] = tools;
         payload["tool_choice"] = "auto";
@@ -73,11 +84,17 @@ LlmResult llm_chat(const Config& cfg, const json& messages, const json& tools, b
             raw_content += d["content"].get<std::string>();
             changed = true;
             ++deltas;
+            // One streamed delta is roughly one answer token (Task EG1). Only content
+            // counts here; reasoning never eats into the answer cap. Content streaming
+            // inside an inline thinking section counts as thinking instead (Task H).
+            if (in_think_section(raw_content)) { if (hooks.reasoning_deltas) ++(*hooks.reasoning_deltas); }
+            else if (hooks.answer_deltas) ++(*hooks.answer_deltas);
         }
         if (d.contains("reasoning_content") && d["reasoning_content"].is_string()) {
             res.reasoning += d["reasoning_content"].get<std::string>();
             changed = true;
             ++deltas;
+            if (hooks.reasoning_deltas) ++(*hooks.reasoning_deltas);
         }
         if (d.contains("tool_calls") && d["tool_calls"].is_array()) {
             for (const auto& tc : d["tool_calls"]) {
@@ -131,8 +148,8 @@ LlmResult llm_chat(const Config& cfg, const json& messages, const json& tools, b
     if (!stream_error.empty()) throw std::runtime_error("Model server error: " + stream_error);
 
     // Thinking that came back inline and got cut off: keep it as reasoning.
-    auto open = raw_content.find("<think>");
-    if (open != std::string::npos && raw_content.find("</think>", open) == std::string::npos && res.reasoning.empty())
+    auto open = raw_content.find("\074think\076");
+    if (open != std::string::npos && raw_content.find("\074/think\076", open) == std::string::npos && res.reasoning.empty())
         res.reasoning = raw_content.substr(open + 7);
     res.content = strip_think(raw_content);
     res.reasoning = trim(res.reasoning);

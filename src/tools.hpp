@@ -3,6 +3,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
 
+#include <functional>
 #include <string>
 
 #include "config.hpp"
@@ -27,6 +28,7 @@ public:
     std::string run(const std::string& name, const std::string& arguments, const ToolContext& ctx) const;
     // Short human-readable line shown in the live message, e.g. "Searching: cheap flights".
     std::string status_line(const std::string& name, const std::string& arguments) const;
+    void set_resolver(std::function<long long(const std::string&)> resolver) { resolver_ = std::move(resolver); }
 
     // Exposed for tests.
     static std::string calculate(const std::string& expr);                 // throws on bad input
@@ -36,6 +38,7 @@ public:
 private:
     const Config& cfg_;
     Facts& facts_;
+    std::function<long long(const std::string&)> resolver_;
 
     std::string web_search(const json& a) const;
     std::string fetch_url(const json& a) const;

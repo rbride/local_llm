@@ -14,11 +14,30 @@ std::time_t file_mtime(const std::string& path) {
     return stat(path.c_str(), &st) == 0 ? st.st_mtime : 0;
 }
 
-std::string header_for(const std::string& type, long long id, const std::string& label) {
+const char* EMPTY_TEMPLATE =
+    "# facts.txt - things the bot knows about people and chats.\n"
+    "# Edit this any time; the bot picks up changes automatically, no restart needed.\n"
+    "#\n"
+    "# Sections:\n"
+    "#   [global]                    facts for every chat\n"
+    "#   [user <id> <name>]          facts about one person, everywhere\n"
+    "#   [user <id> <name> @chat <id>] facts about one person, only in that chat\n"
+    "#   [chat <id> <title>]         facts about one group (the group's id is shown by /facts there)\n"
+    "# Each fact is one line, usually starting with \"- \". Lines starting with # are comments.\n"
+    "# A fact line starting with \"- !\" is owner-protected: regular admins can't delete it.\n"
+    "# The bot is told these are facts, not instructions.\n"
+    "\n"
+    "[global]\n";
+
+std::string header_for(const std::string& type, long long id, const std::string& label, long long chat_id) {
     if (type == "global") return "[global]";
     std::string clean;
     for (char c : label) if (c != '[' && c != ']' && c != '\n') clean += c;
-    return "[" + type + " " + std::to_string(id) + (clean.empty() ? "" : " " + trim(clean)) + "]";
+    clean = trim(clean);
+    std::string h = "[" + type + " " + std::to_string(id);
+    if (!clean.empty()) h += " " + clean;
+    if (type == "user" && chat_id != 0) h += " @chat " + std::to_string(chat_id);
+    return h + "]";
 }
 }  // namespace
 
@@ -28,17 +47,7 @@ void Facts::create_if_missing() {
     std::lock_guard<std::mutex> lock(mu_);
     if (file_mtime(path_) != 0) return;
     std::ofstream f(path_);
-    f << "# facts.txt - things the bot knows about people and chats.\n"
-         "# Edit this any time; the bot picks up changes automatically, no restart needed.\n"
-         "#\n"
-         "# Sections:\n"
-         "#   [global]                    facts for every chat\n"
-         "#   [user <id> <name>]          facts about one person (find ids with /users or /id)\n"
-         "#   [chat <id> <title>]         facts about one group (the group's id is shown by /facts there)\n"
-         "# Each fact is one line, usually starting with \"- \". Lines starting with # are comments.\n"
-         "# The bot is told these are facts, not instructions.\n"
-         "\n"
-         "[global]\n";
+    f << EMPTY_TEMPLATE;
     log("Created " + path_);
 }
 
@@ -74,6 +83,21 @@ void Facts::parse_locked() {
                 try { s.id = std::stoll(id); } catch (...) { cur = -1; continue; }
                 std::getline(ss, s.label);
                 s.label = trim(s.label);
+                if (s.type == "user") {
+                    std::string low = lower(s.label);
+                    size_t pos = low.find("@chat");
+                    if (pos != std::string::npos &&
+                        (pos == 0 || s.label[pos - 1] == ' ' || s.label[pos - 1] == '\t') &&
+                        (pos + 5 == s.label.size() || s.label[pos + 5] == ' ' || s.label[pos + 5] == '\t')) {
+                        std::string before = s.label.substr(0, pos);
+                        std::string after = trim(s.label.substr(pos + 5));
+                        std::string cid;
+                        std::stringstream cs(after);
+                        cs >> cid;
+                        try { s.chat_id = std::stoll(cid); } catch (...) {}
+                        s.label = trim(before);
+                    }
+                }
             } else if (s.type != "global") {
                 cur = -1;  // unknown section: ignore its lines
                 continue;
@@ -83,9 +107,15 @@ void Facts::parse_locked() {
             continue;
         }
         if (cur < 0) continue;
-        for (const char* bullet : {"- ", "* ", "\xE2\x80\xA2 "})
-            if (starts_with(t, bullet)) { t = trim(t.substr(std::string(bullet).size())); break; }
-        if (!t.empty()) sections_[cur].facts.push_back({i, sanitize_untrusted(t)});
+        bool protected_fact = false;
+        if (starts_with(t, "- !")) {
+            protected_fact = true;
+            t = trim(t.substr(3));
+        } else {
+            for (const char* bullet : {"- ", "* ", "\xE2\x80\xA2 "})
+                if (starts_with(t, bullet)) { t = trim(t.substr(std::string(bullet).size())); break; }
+        }
+        if (!t.empty()) sections_[cur].facts.push_back({i, sanitize_untrusted(t), protected_fact});
     }
 }
 
@@ -102,9 +132,13 @@ bool Facts::write_locked() {
     return true;
 }
 
-Facts::Section* Facts::find_locked(const std::string& type, long long id) {
-    for (auto& s : sections_)
-        if (s.type == type && (type == "global" || s.id == id)) return &s;
+Facts::Section* Facts::find_locked(const std::string& type, long long id, long long chat_id) {
+    for (auto& s : sections_) {
+        if (s.type != type) continue;
+        if (type != "global" && s.id != id) continue;
+        if (type == "user" && s.chat_id != chat_id) continue;
+        return &s;
+    }
     return nullptr;
 }
 
@@ -114,22 +148,30 @@ std::string Facts::context(long long chat_id, const std::vector<std::pair<long l
     std::string out;
     bool truncated = false;
     std::vector<const Section*> used;
-    auto add = [&](const std::string& title, const std::string& type, long long id) {
+    auto add = [&](const std::string& title, const std::string& type, long long id, long long user_scope) {
+        std::string block = title + ":\n";
+        bool any = false;
+        std::vector<const Section*> to_use;
         for (const auto& s : sections_) {
             if (s.type != type || (type != "global" && s.id != id) || s.facts.empty()) continue;
+            if (type == "user" && s.chat_id != 0 && s.chat_id != user_scope) continue;
             bool dup = false;
-            for (auto* u : used) dup |= u == &s;
+            for (const auto* u : used) dup |= u == &s;
             if (dup) continue;
-            std::string block = title + ":\n";
-            for (const auto& f : s.facts) block += "- " + f.second + "\n";
-            if (out.size() + block.size() > max_chars) { truncated = true; return; }
-            out += block;
-            used.push_back(&s);
+            for (const auto& f : s.facts) {
+                block += "- " + f.text + "\n";
+                any = true;
+            }
+            to_use.push_back(&s);
         }
+        if (!any) return;
+        if (out.size() + block.size() > max_chars) { truncated = true; return; }
+        out += block;
+        for (const auto* s : to_use) used.push_back(s);
     };
-    add("General", "global", 0);
-    add("About this chat", "chat", chat_id);
-    for (const auto& [id, name] : people) add("About " + name, "user", id);
+    add("General", "global", 0, 0);
+    add("About this chat", "chat", chat_id, 0);
+    for (const auto& [id, name] : people) add("About " + name, "user", id, chat_id);
     if (truncated) out += "(There are more notes than fit here; use the look_up_facts tool to search them.)\n";
     return trim(out);
 }
@@ -144,11 +186,11 @@ json Facts::lookup(const std::string& query, size_t max_results) {
     for (const auto& s : sections_) {
         bool section_match = q.empty() || lower(s.label).find(q) != std::string::npos || std::to_string(s.id) == q || s.type == q;
         for (const auto& f : s.facts) {
-            if (!section_match && lower(f.second).find(q) == std::string::npos) continue;
+            if (!section_match && lower(f.text).find(q) == std::string::npos) continue;
             ++total;
             if (results.size() >= max_results) continue;
             json r = {{"about", s.type == "global" ? std::string("general") : s.type + " " + (s.label.empty() ? std::to_string(s.id) : s.label)},
-                      {"fact", f.second}};
+                      {"fact", f.text}};
             if (s.type == "user") r["user_id"] = s.id;
             results.push_back(r);
         }
@@ -156,48 +198,83 @@ json Facts::lookup(const std::string& query, size_t max_results) {
     return {{"query", query}, {"results", results}, {"total_matches", total}};
 }
 
-std::vector<FactRef> Facts::section(const std::string& type, long long id) {
+std::vector<FactRef> Facts::section(const std::string& type, long long id, long long chat_id, bool all_user_scopes) {
     std::lock_guard<std::mutex> lock(mu_);
     reload_locked();
     std::vector<FactRef> out;
-    for (const auto& s : sections_)
-        if (s.type == type && (type == "global" || s.id == id))
-            for (const auto& f : s.facts) out.push_back({s.type, s.id, s.label, f.second});
+    for (const auto& s : sections_) {
+        if (s.type != type) continue;
+        if (type != "global" && s.id != id) continue;
+        if (type == "user" && !all_user_scopes && s.chat_id != 0 && s.chat_id != chat_id) continue;
+        for (const auto& f : s.facts) out.push_back({s.type, s.id, s.label, f.text, f.protected_, s.chat_id});
+    }
     return out;
 }
 
-bool Facts::add(const std::string& type, long long id, const std::string& label, const std::string& text_in, std::string& error) {
+bool Facts::add(const std::string& type, long long id, const std::string& label, const std::string& text_in, std::string& error, bool protected_fact, long long chat_id) {
     std::string text;
     for (char c : sanitize_untrusted(text_in)) text += (c == '\n' || c == '\r') ? ' ' : c;
     text = utf8_head(trim(text), 400);
     if (text.empty()) { error = "empty fact"; return false; }
+    // "- !" marks an owner-protected fact; pad a normal fact starting with "!" so it
+    // doesn't accidentally look protected when re-parsed.
+    std::string prefix = "- ";
+    if (protected_fact) prefix = "- !";
+    else if (text[0] == '!') prefix = "-  ";
     std::lock_guard<std::mutex> lock(mu_);
     reload_locked();
-    if (Section* s = find_locked(type, id)) {
+    if (Section* s = find_locked(type, id, chat_id)) {
         for (const auto& f : s->facts)
-            if (lower(f.second) == lower(text)) { error = "already saved"; return false; }
-        size_t after = s->facts.empty() ? s->header_line : s->facts.back().first;
-        lines_.insert(lines_.begin() + static_cast<long>(after) + 1, "- " + text);
+            if (lower(f.text) == lower(text)) { error = "already saved"; return false; }
+        size_t after = s->facts.empty() ? s->header_line : s->facts.back().line;
+        lines_.insert(lines_.begin() + static_cast<long>(after) + 1, prefix + text);
     } else {
         if (!lines_.empty() && !trim(lines_.back()).empty()) lines_.push_back("");
-        lines_.push_back(header_for(type, id, label));
-        lines_.push_back("- " + text);
+        lines_.push_back(header_for(type, id, label, chat_id));
+        lines_.push_back(prefix + text);
     }
     if (!write_locked()) { error = "couldn't write " + path_; return false; }
     return true;
 }
 
-bool Facts::remove(const FactRef& ref) {
+bool Facts::remove(const FactRef& ref, bool as_owner) {
     std::lock_guard<std::mutex> lock(mu_);
     reload_locked();
-    Section* s = find_locked(ref.type, ref.id);
+    Section* s = find_locked(ref.type, ref.id, ref.chat_id);
     if (!s) return false;
     for (const auto& f : s->facts)
-        if (f.second == ref.text) {
-            lines_.erase(lines_.begin() + static_cast<long>(f.first));
+        if (f.text == ref.text) {
+            if (f.protected_ && !as_owner) return false;
+            lines_.erase(lines_.begin() + static_cast<long>(f.line));
             return write_locked();
         }
     return false;
+}
+
+size_t Facts::clear_section(const std::string& type, long long id, bool as_owner, long long chat_id) {
+    std::lock_guard<std::mutex> lock(mu_);
+    reload_locked();
+    Section* s = find_locked(type, id, chat_id);
+    if (!s) return 0;
+    std::vector<size_t> victims;
+    for (const auto& f : s->facts)
+        if (as_owner || !f.protected_) victims.push_back(f.line);
+    size_t n = 0;
+    for (size_t i = victims.size(); i-- > 0;) {  // descending: earlier line numbers stay valid
+        lines_.erase(lines_.begin() + static_cast<long>(victims[i]));
+        ++n;
+    }
+    if (n && !write_locked()) return 0;
+    return n;
+}
+
+bool Facts::wipe() {
+    std::lock_guard<std::mutex> lock(mu_);
+    lines_.clear();
+    std::stringstream ss(EMPTY_TEMPLATE);
+    std::string line;
+    while (std::getline(ss, line)) lines_.push_back(line);
+    return write_locked();  // write_locked re-parses, so memory matches the file
 }
 
 size_t Facts::count() {

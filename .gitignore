@@ -4,9 +4,13 @@ bot.env
 # Runtime state and hand-edited data
 state.json
 facts.txt
+aliases.txt
 
 # Build artifacts
 build/
+build-cov/
+*.gcda
+*.gcno
 tgbot
 
 # Editor / OS cruft
@@ -14,3 +18,11 @@ tgbot
 *.swp
 *~
 .DS_Store
+.aider*
+tests/selftest
+tests/*.d
+.tasks/
+tgbot.log
+
+*.log
+state.json

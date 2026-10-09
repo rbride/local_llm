@@ -711,5 +711,30 @@ std::string Tools::datetime() const {
 }
 
 std::string Tools::look_up_facts(const json& a) const {
-    return facts_.lookup(arg_str(a, "query")).dump(-1, ' ', false, json::error_handler_t::replace);
+    std::string query = arg_str(a, "query");
+    json out = facts_.lookup(query);
+    if (resolver_ && !trim(query).empty()) {
+        long long uid = resolver_(query);
+        if (uid != 0) {
+            json by_id = facts_.lookup(std::to_string(uid));
+            if (out.contains("results") && out["results"].is_array() && by_id.contains("results") &&
+                by_id["results"].is_array()) {
+                for (const auto& r : by_id["results"]) {
+                    bool dup = false;
+                    for (const auto& e : out["results"]) {
+                        if (e.value("about", "") == r.value("about", "") && e.value("fact", "") == r.value("fact", "")) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                    if (!dup) {
+                        if (out["results"].size() < 40) out["results"].push_back(r);
+                        if (out.contains("total_matches") && out["total_matches"].is_number())
+                            out["total_matches"] = out["total_matches"].get<long long>() + 1;
+                    }
+                }
+            }
+        }
+    }
+    return out.dump(-1, ' ', false, json::error_handler_t::replace);
 }

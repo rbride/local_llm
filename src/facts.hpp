@@ -11,6 +11,8 @@
 //
 //   [chat -1003932332088 Nathan Chat]
 //   - Friday is movie night
+//
+// A fact line starting with "- !" is owner-protected: regular admins can't delete it.
 #pragma once
 #include <nlohmann/json.hpp>
 
@@ -26,6 +28,8 @@ struct FactRef {
     long long id = 0;  // user or chat id (0 for global)
     std::string label; // name/title from the header
     std::string text;
+    bool protected_ = false;
+    long long chat_id = 0; // for user facts: 0 = everywhere, otherwise only this chat
 };
 
 class Facts {
@@ -38,17 +42,28 @@ public:
     // Search everything by name, id or keyword (for the look_up_facts tool).
     json lookup(const std::string& query, size_t max_results = 40);
     // All facts in one section, in file order.
-    std::vector<FactRef> section(const std::string& type, long long id);
-    bool add(const std::string& type, long long id, const std::string& label, const std::string& text, std::string& error);
-    bool remove(const FactRef& f);
+    std::vector<FactRef> section(const std::string& type, long long id, long long chat_id = 0, bool all_user_scopes = false);
+    bool add(const std::string& type, long long id, const std::string& label, const std::string& text, std::string& error, bool protected_fact = false, long long chat_id = 0);
+    bool remove(const FactRef& f, bool as_owner = false);
+    // Delete every fact in one section (Task D /forget). Owner-protected lines are only
+    // removed when as_owner; returns how many facts were deleted.
+    size_t clear_section(const std::string& type, long long id, bool as_owner, long long chat_id = 0);
+    // Rewrite the whole file to the empty template (Task I /wipefacts, owner-only at the call site).
+    bool wipe();
     size_t count();
 
 private:
+    struct StoredFact {
+        size_t line = 0;
+        std::string text;
+        bool protected_ = false;
+    };
     struct Section {
         std::string type, label;
         long long id = 0;
+        long long chat_id = 0;
         size_t header_line = 0;
-        std::vector<std::pair<size_t, std::string>> facts;  // (line index, text)
+        std::vector<StoredFact> facts;
     };
     std::string path_;
     std::mutex mu_;
@@ -59,5 +74,5 @@ private:
     void reload_locked(bool force = false);
     void parse_locked();
     bool write_locked();
-    Section* find_locked(const std::string& type, long long id);
+    Section* find_locked(const std::string& type, long long id, long long chat_id = 0);
 };

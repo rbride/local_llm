@@ -32,6 +32,7 @@ void Config::load() {
     telegram_api = get("TELEGRAM_API_URL", "https://api.telegram.org");
     while (!telegram_api.empty() && telegram_api.back() == '/') telegram_api.pop_back();
     allowed_users = parse_ids(get("ALLOWED_USER_IDS"), &allow_everyone);
+    owner_users = parse_ids(get("OWNER_USER_IDS"), nullptr);
     admin_users = parse_ids(get("ADMIN_USER_IDS"), nullptr);
     trusted_chats = parse_ids(get("TRUSTED_CHAT_IDS"), nullptr);
     allow_group_members = get_bool("ALLOW_GROUP_MEMBERS", true);
@@ -52,13 +53,31 @@ void Config::load() {
     llm_model = get("LLM_MODEL", "local-model");
     llm_api_key = get("LLM_API_KEY");
     system_prompt = get("SYSTEM_PROMPT", "You are a helpful, funny assistant chatting over Telegram. Keep replies concise.");
-    persona_reminder = get_bool("PERSONA_REMINDER", true);
+    persona_reminder = parse_reminder(get("PERSONA_REMINDER", "1"), 1);
+    persona_reminder_max_chars = std::stoul(get("PERSONA_REMINDER_MAX_CHARS", "600"));
     max_history = std::stoul(get("MAX_HISTORY", "20"));
     max_tokens = std::stoi(get("MAX_TOKENS", "6000"));
-    retry_max_tokens = std::stoi(get("RETRY_MAX_TOKENS", "2048"));
+    max_total_tokens = std::stoi(get("MAX_TOTAL_TOKENS", "32768"));
+    // THINK_BUDGET / FALLBACK_THINK_TOKENS (Task H). 0 = off; negative is treated like 0.
+    think_budget = std::stoi(get("THINK_BUDGET", "0"));
+    fallback_think_tokens = std::stoi(get("FALLBACK_THINK_TOKENS", "1024"));
+    // RETRY_MAX_TOKENS was retired in Task EG1: the retry path runs with thinking off, so
+    // its cap is now the answer cap (MAX_TOKENS / /maxtokens). Warn once if still set.
+    if (!get("RETRY_MAX_TOKENS").empty())
+        log("Warning: RETRY_MAX_TOKENS is deprecated and ignored; the no-thinking retry now uses the answer cap (MAX_TOKENS or /maxtokens).");
     temperature = std::stod(get("TEMPERATURE", "0.7"));
+    temperature_thinking = get_opt("TEMPERATURE_THINKING");
+    temperature_no_thinking = get_opt("TEMPERATURE_NO_THINKING");
+    top_p_thinking = get_opt("TOP_P_THINKING");
+    top_p_no_thinking = get_opt("TOP_P_NO_THINKING");
+    presence_penalty_thinking = get_opt("PRESENCE_PENALTY_THINKING");
+    presence_penalty_no_thinking = get_opt("PRESENCE_PENALTY_NO_THINKING");
     llm_timeout = std::stol(get("LLM_TIMEOUT", "600"));
     thinking = get_bool("THINKING", true);
+
+    models_dir = get("MODELS_DIR", "/models");
+    while (models_dir.size() > 1 && models_dir.back() == '/') models_dir.pop_back();
+    model_reload_cmd = get("MODEL_RELOAD_CMD");
 
     streaming = get_bool("STREAMING", true);
     draft_interval_ms = std::stol(get("DRAFT_INTERVAL_MS", "900"));
@@ -92,9 +111,11 @@ void Config::load() {
     fetch_max_chars = std::stoul(get("FETCH_MAX_CHARS", "8000"));
     weather_units = lower(get("WEATHER_UNITS", "metric"));
     facts_file = get("FACTS_FILE", "facts.txt");
+    aliases_file = get("ALIASES_FILE", "aliases.txt");
     facts_context_chars = std::stoul(get("FACTS_CONTEXT_CHARS", "3000"));
     show_tool_footer = get_bool("SHOW_TOOL_FOOTER", true);
     state_file = get("STATE_FILE", "state.json");
+    log_file = get("LOG_FILE", "tgbot.log");
     git_repo_dir = get("GIT_REPO_DIR");
     git_remote = get("GIT_REMOTE", "origin");
     git_branch = get("GIT_BRANCH", "main");
@@ -123,6 +144,26 @@ std::string Config::get(const std::string& key, const std::string& def) const {
     if (const char* e = std::getenv(key.c_str()); e && *e) return e;
     auto it = file_vals_.find(key);
     return it != file_vals_.end() ? it->second : def;
+}
+
+int Config::parse_reminder(const std::string& raw, int def) {
+    std::string v = lower(trim(raw));
+    if (v == "true" || v == "yes" || v == "on") return 1;
+    if (v == "false" || v == "no" || v == "off") return 0;
+    try {
+        size_t used = 0;
+        int n = std::stoi(v, &used);
+        if (used == v.size() && n >= 0) return n;
+    } catch (...) {}
+    log("Warning: bad PERSONA_REMINDER value '" + utf8_head(raw, 60) + "', using " + std::to_string(def) +
+        " (0 = off, 1 = every message, N = every Nth message)");
+    return def;
+}
+
+std::optional<double> Config::get_opt(const std::string& key) const {
+    std::string v = trim(get(key));
+    if (v.empty()) return {};
+    return std::stod(v);
 }
 
 bool Config::get_bool(const std::string& key, bool def) const {
